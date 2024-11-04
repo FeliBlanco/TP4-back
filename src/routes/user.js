@@ -2,10 +2,17 @@ const { Router } = require('express');
 const UserModel = require('../models/user');
 const jwt = require("jsonwebtoken");
 const bcrypt = require('bcrypt');
+const OpenAI = require('openai')
 
 const router = Router();
 
 const secretKey = "raulihno"
+
+
+
+const AIClient = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  });
 
 const verifyToken = async (req, res, next) => {
     const header = req.header("Authorization") || "";
@@ -38,6 +45,42 @@ const generarTokenJWT = (userid) => {
     const token = jwt.sign({ userid }, secretKey);
     return token;
 }
+
+router.get('/recetas', async (req, res) => {
+    try {
+
+        const productos = [];
+        const completion = await AIClient.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                {"role": "user", "content": `
+                    Tengo los siguientes productos en mi heladera: pechuga de pollo, dulce de leche, pure de tomate, manteca.
+
+Genera un máximo de 12 recetas de postres y 12 recetas de comidas en formato JSON. Cada receta debe estar en el formato:
+
+{
+  "nombre": "Nombre de la receta",
+  "tipo": "postre" o "comida",
+  "ingredientes": ["lista de ingredientes"],
+  "instrucciones": "Instrucciones de preparación"
+}
+
+Instrucciones adicionales:
+- Si el parámetro "ingredientes_estrictos" es verdadero, solo utiliza los productos de la lista para las recetas. 
+- Si "ingredientes_estrictos" es falso, permite que las recetas incluyan ingredientes adicionales, además de los productos que te proporcioné.
+ingredientes_estrictos: false
+  
+Devuelve la respuesta en formato JSON.
+                    `}
+            ]
+        });
+        res.send(completion.choices[0].message)
+    }
+    catch(err) {
+        console.log(err)
+        res.status(503).send()
+    }
+})
 
 router.get('/user_data', verifyToken, (req, res) => {
     try {
