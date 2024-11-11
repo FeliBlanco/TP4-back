@@ -2,7 +2,11 @@ const { Router } = require('express');
 const UserModel = require('../models/user');
 const jwt = require("jsonwebtoken");
 const bcrypt = require('bcrypt');
-const OpenAI = require('openai')
+const OpenAI = require('openai');
+const ProductoUserModel = require('../models/productoUser');
+const RecetaModel = require('../models/receta');
+const mongoose = require('mongoose')
+
 
 const router = Router();
 
@@ -23,14 +27,20 @@ const verifyToken = async (req, res, next) => {
         const decodeToken = jwt.verify(token, secretKey);
 
         let userData = await UserModel
-        .findOne({ _id: decodeToken.userid })
-        .populate({
-            path: "productos.producto",
-            model: "Producto",
-        });
+        .findOne({ _id: decodeToken.userid });
 
-        userData.productos = await Promise.all(userData.productos.map(value =>  ({...value, producto:{...value.producto, imagen: `${process.env.URL_IMAGEN}/productos/${value.producto.imagen}`}})))
-        console.log(userData.productos)
+        const productos = await ProductoUserModel.find({user: userData._id}).select("cantidad vencimiento producto").populate({path:'producto', select:'_id tipo nombre imagen'});
+        const lpmm = productos.map(value => {
+            const productoData = value.toObject();
+            return {
+                ...productoData,
+                producto: {
+                    ...productoData.producto,
+                    imagen: `${process.env.URL_IMAGEN}/productos/${productoData.producto.imagen}`
+                }
+            };
+        });
+        userData = {...userData.toObject(), productos: lpmm}
 
         if(!userData) return res.status(401).json({ message: "Token invalido" });
         req.user = userData;
@@ -46,35 +56,62 @@ const generarTokenJWT = (userid) => {
     return token;
 }
 
-router.get('/recetas', async (req, res) => {
+router.post('/receta', verifyToken, async (req, res) => {
     try {
+        const {
+            productos
+        } = req.body;
 
-        const productos = [];
+        if(!productos) return res.status(401).send({err: 'productos is required.'});
+
+        const newReceta = new RecetaModel({
+            user: req.user._id,
+            productos
+        })
+        const result = await newReceta.save();
+
+        res.send(result._id)
+    }
+    catch(err) {
+        console.log(err);
+        res.status(503).send();
+    }
+})
+
+router.get('/receta/:id', async (req, res) => {
+    try {
+        const recetaid = req.params.id;
+        const recetaInfo = await RecetaModel.findOne({_id: recetaid}).populate({path: 'productos', select:'cantidad vencimiento producto', populate:{path:'producto', select:'_id nombre imagen'}});
+        console.log(recetaInfo)
+
+        const productos = recetaInfo.productos.map(value => ({cantidad:value.cantidad, vencimiento: value.vencimiento, _id: value.producto._id, nombre:value.producto.nombre, imagen: `${process.env.URL_IMAGEN}/productos/${value.producto.imagen}`}))
+        console.log(productos)
         const completion = await AIClient.chat.completions.create({
             model: "gpt-4o",
             messages: [
                 {"role": "user", "content": `
-                    Tengo los siguientes productos en mi heladera: pechuga de pollo, dulce de leche, pure de tomate, manteca.
+                    Tengo los siguientes productos en mi heladera: ${JSON.stringify(productos)}
 
-Genera un máximo de 12 recetas de postres y 12 recetas de comidas en formato JSON. Cada receta debe estar en el formato:
+Genera 12 recetas de postres (en caso de que se pueda hacer con los ingredientes disponibles) y 12 recetas de comidas (en caso de que se pueda hacer con los ingredientes disponibles) en formato JSON. Teniendo en cuenta las cantidades (en caso de que sea 0, la cantidad no está definida, cuenta como que hay stock) y la fecha de vencimiento. Cada receta debe estar en el formato:
 
 {
   "nombre": "Nombre de la receta",
   "tipo": "postre" o "comida",
-  "ingredientes": ["lista de ingredientes"],
-  "instrucciones": "Instrucciones de preparación"
+  "ingredientes": ["lista de ingredientes (con la misma informacion del JSON anterior, en caso de que sea un ingrediente que no esté en la lista, solo mostrar nombre) y "existe": (true o false si existe en la lista anterior)"],
+  "instrucciones": "Instrucciones de preparación (Devolveme un array con los pasos a seguir)"
 }
 
 Instrucciones adicionales:
 - Si el parámetro "ingredientes_estrictos" es verdadero, solo utiliza los productos de la lista para las recetas. 
-- Si "ingredientes_estrictos" es falso, permite que las recetas incluyan ingredientes adicionales, además de los productos que te proporcioné.
+- Si "ingredientes_estrictos" es falso, permite que las recetas incluyan ingredientes adicionales, además de los productos que te proporcioné, que si o si debe haber uno.
 ingredientes_estrictos: false
-  
-Devuelve la respuesta en formato JSON.
+
+Devuelveme solo el contenido JSON, sin texto ni nada, para usarlo directamente en JSON.parse
                     `}
             ]
         });
-        res.send(completion.choices[0].message)
+        console.log("termina")
+        res.send(completion.choices[0].message.content)
     }
     catch(err) {
         console.log(err)
@@ -92,6 +129,24 @@ router.get('/user_data', verifyToken, (req, res) => {
     }
 })
 
+router.post('/sacar_productos', verifyToken, async (req, res) => {
+    try {
+        const {
+            ids
+        } = req.body;
+
+        ids.forEach(async id => {
+            await ProductoUserModel.deleteOne({_id: id})
+        })
+
+        res.send()
+    }
+    catch(err) {
+        console.log(err)
+        res.status(503).send()       
+    }
+})
+
 router.post('/agregar_producto', verifyToken, async (req, res) => {
     try {
         const {
@@ -100,7 +155,10 @@ router.post('/agregar_producto', verifyToken, async (req, res) => {
             id
         } = req.body;
 
-        const result = await UserModel.updateOne({_id: req.user._id}, {$push: {productos: {producto: id, cantidad, vencimiento}}})
+        const newProductoUser = new ProductoUserModel({user: req.user._id, producto: id, cantidad, vencimiento});
+        const result = await newProductoUser.save()
+
+        UserModel.updateOne({_id: req.user._id}, {productos: {$push: result._id}})
         res.send(result)
     }
     catch(err) {

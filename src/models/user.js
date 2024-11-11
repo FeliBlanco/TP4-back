@@ -16,16 +16,8 @@ const UserSchema = new mongoose.Schema({
     },
     productos: [
         {
-            producto: {
-                type: mongoose.Types.ObjectId,
-                ref: 'Producto'
-            },
-            cantidad: {
-                type: Number
-            },
-            vencimiento: {
-                type: String
-            }
+            type: mongoose.Types.ObjectId,
+            ref: 'ProductoUser'
         }
     ]
 },{
